@@ -134,6 +134,33 @@ async def save(page, debug):
     await shot(page, "yt_08_saved", debug)
 
 
+async def clear_verify_gate(page, args, reload_after=False):
+    """Google's 'Verify it's you' gate can appear at load OR mid-upload (right
+    after the sensitive upload action). Returns True if clear to proceed, False
+    if still gated. Never navigates away unless reload_after=True (safe only at
+    load time — never mid-upload, which would discard the upload dialog)."""
+    if not await ui.verify_gate_present(page):
+        return True
+    log("BLOCKED: 'Verify it's you' challenge.")
+    await shot(page, "yt_verify_gate", True)
+    if not args.keep_open:
+        log("  Re-run with --keep-open and clear it in the window.")
+        return False
+    log(f"  Complete it in the window; waiting up to {args.verify_wait}s...")
+    await ui.click_text(page, ["Next", "Continue"], 4000)
+    end = time.time() + args.verify_wait
+    while time.time() < end and await ui.verify_gate_present(page):
+        await page.wait_for_timeout(3000)
+    if await ui.verify_gate_present(page):
+        log("  still gated; aborting.")
+        return False
+    log("  verification cleared.")
+    if reload_after:
+        await _goto(page, STUDIO)
+        await page.wait_for_timeout(3000)
+    return True
+
+
 async def run(args):
     video = Path(args.video).expanduser()
     if not video.is_file():
@@ -153,22 +180,8 @@ async def run(args):
             log("ERROR: not logged in. Run login.py first.")
             return 3
 
-        if await ui.verify_gate_present(page):
-            log("BLOCKED: 'Verify it's you' challenge.")
-            await shot(page, "yt_verify_gate", True)
-            if not args.keep_open:
-                log("  Re-run with --keep-open and clear it in the window.")
-                return 7
-            log(f"  Complete it in the window; waiting up to {args.verify_wait}s...")
-            await ui.click_text(page, ["Next", "Continue"], 4000)
-            end = time.time() + args.verify_wait
-            while time.time() < end and await ui.verify_gate_present(page):
-                await page.wait_for_timeout(3000)
-            if await ui.verify_gate_present(page):
-                log("  still gated; aborting.")
-                return 7
-            await _goto(page, STUDIO)
-            await page.wait_for_timeout(3000)
+        if not await clear_verify_gate(page, args, reload_after=True):
+            return 7
 
         if args.channel_id or args.channel_handle:
             await select_channel(page, args.channel_id, args.channel_handle)
@@ -183,6 +196,11 @@ async def run(args):
 
         if not await open_upload(page, video, args.debug):
             return 4
+        # The gate most often fires here — on the sensitive upload action. Clear
+        # it BEFORE filling details, so title/description/tags/audience/Save are
+        # not silently blocked by the modal. No reload (would drop the dialog).
+        if not await clear_verify_gate(page, args):
+            return 7
         await fill_details(page, meta, args.thumbnail, args.made_for_kids, args.debug)
         await click_next(page, 3, args.debug)
         await set_visibility(page, args.visibility, args.debug)
