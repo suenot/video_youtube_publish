@@ -1,0 +1,13 @@
+venv/
+.venv/
+__pycache__/
+*.pyc
+.DS_Store
+.camoufox_profile/
+.camoufox_fp.pkl
+debug/
+output/
+input/
+*.log
+*.sqlite
+cookies*.json
