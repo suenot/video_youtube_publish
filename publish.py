@@ -206,6 +206,17 @@ async def run(args):
         await set_visibility(page, args.visibility, args.debug)
         await save(page, args.debug)
 
+        # Capture the watch id from the save dialog (for blog embedding).
+        try:
+            import re as _re
+            html = await page.content()
+            m = (_re.search(r"youtu\.be/([\w-]{6,})", html)
+                 or _re.search(r"watch\?v=([\w-]{6,})", html))
+            if m:
+                log(f"VIDEO_ID: {m.group(1)}")
+        except Exception:
+            pass
+
         active = channel_id_from_url(page.url)
         if active:
             await _goto(page, f"{STUDIO}/channel/{active}/videos/upload")
