@@ -1,4 +1,4 @@
-# video_youtube_publish
+# video-publisher
 
 Publish a finished video to **YouTube** by driving **YouTube Studio** through an
 anti-detect **Camoufox** browser session — **no Data API, no OAuth, no API keys**.
@@ -6,6 +6,22 @@ It reuses a logged-in YouTube session (its own persistent Camoufox profile),
 handles the "Verify it's you" gate, selects the target channel, pre-checks the
 video length against the unverified-channel limit, and verifies the upload
 actually published.
+
+## 🏭 The Content Factory
+
+video-publisher is the **final stage (4)** of an automated pipeline that turns a
+**blog article into a published YouTube video** — no API keys, driven end-to-end
+through logged-in browser sessions (Camoufox) and local media tooling.
+
+| # | Stage | Repo | What it does |
+|---|-------|------|--------------|
+| 1 | Generate | [gaia](https://github.com/suenot/gaia) | Drive NotebookLM / Gemini / Flow from a logged-in session → audio overview + slide deck |
+| 2 | Build | [video-maker](https://github.com/suenot/video-maker) | Audio narration + slide-deck PDF → synced MP4 (+ SRT, thumbnail) |
+| 3 | Describe | [video-metadata](https://github.com/suenot/video-metadata) | Video + article → YouTube title / description / tags / chapter timestamps |
+| **4** | **Publish** | **[video-publisher](https://github.com/suenot/video-publisher)** ⬅ *this repo* | Drive YouTube Studio → upload with metadata, channel switch, visibility |
+
+**Flow:** `article → gaia → video-maker → video-metadata → video-publisher → YouTube`
+(the published video is then embedded back into the blog article).
 
 > ⚠️ **ACCOUNT SAFETY — READ THIS**
 > The Camoufox profile (`.camoufox_profile/`) holds **live Google session
