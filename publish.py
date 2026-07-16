@@ -54,17 +54,30 @@ async def open_upload(page, video, debug):
     log(f"  selected: {video.name}")
     await page.wait_for_timeout(4000)
     # Big uploads keep the details dialog dimmed ("Creating link...") until the
-    # video entity exists; editing before that silently fails. Wait for the watch
-    # link to be created (up to ~3 min) before returning to fill details.
-    for _ in range(60):
+    # video entity exists; editing before that silently fails. Wait until that
+    # text clears AND the audience radio is actually clickable (the dialog is
+    # only interactive then). YouTube can throttle this for minutes after many
+    # uploads, so wait up to ~8 min.
+    ready = False
+    for _ in range(160):
         try:
-            html = await page.content()
+            txt = (await ui.all_text(page))
         except Exception:
-            html = ""
-        if "youtu.be/" in html or "watch?v=" in html:
-            log("  upload link created; details editable")
+            txt = ""
+        creating = "creating link" in txt
+        r = page.locator("tp-yt-paper-radio-button[name='VIDEO_MADE_FOR_KIDS_NOT_MFK']")
+        try:
+            enabled = await r.count() > 0 and await r.first.is_enabled()
+        except Exception:
+            enabled = False
+        if not creating and enabled:
+            ready = True
+            log("  details dialog is interactive")
             break
         await page.wait_for_timeout(3000)
+    if not ready:
+        log("  WARNING: dialog still not interactive (YouTube throttling link "
+            "creation?) — details may not stick")
     return True
 
 
