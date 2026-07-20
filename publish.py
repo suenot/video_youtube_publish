@@ -7,7 +7,7 @@ from pathlib import Path
 from camoufox_session import make_camoufox, prepare_page, logged_in_youtube, log, shot
 from metadata import load_metadata
 from precheck import video_duration, check
-from channel import select_channel, channel_id_from_url
+from channel import select_channel, channel_id_from_url, _strip_backdrops
 from verify_result import parse_status
 import youtube_ui as ui
 
@@ -28,25 +28,51 @@ async def _goto(page, url, tries=3):
 
 
 async def open_upload(page, video, debug):
-    await ui.dismiss_overlays(page)
-    for sel in ("ytcp-icon-button#upload-icon", "ytcp-button#upload-button",
-                "button[aria-label='Upload videos']"):
-        loc = page.locator(sel)
+    # Opening the upload dialog is flaky: the Create menu doesn't always expand,
+    # and a transient cdk-overlay-backdrop can eat the click. Deep-linking to
+    # .../videos/upload no longer auto-opens the dialog (it just lands on the
+    # Content list). So: go to the Studio home, neutralize backdrops, click the
+    # Create button, then the "Upload video" item — retrying the whole sequence.
+    fi = None
+    for attempt in range(3):
         try:
-            if await loc.count() > 0 and await loc.first.is_visible():
-                await loc.first.click(timeout=4000)
-                break
+            await _goto(page, STUDIO)
+            await page.wait_for_timeout(2500)
         except Exception:
-            continue
-    else:
-        await ui.click_text(page, ["Create"], 8000)
-        await page.wait_for_timeout(800)
-        await ui.click_text(page, ["Upload video"], 5000)
-    await page.wait_for_timeout(1500)
-    await ui.dismiss_overlays(page)
-    await shot(page, "yt_02_upload_dialog", debug)
-    fi = await ui.first_present(
-        page, ["ytcp-uploads-dialog input[type='file']", "input[type='file']"], 15000)
+            pass
+        await ui.dismiss_overlays(page)
+        await _strip_backdrops(page)
+
+        clicked = False
+        for sel in ("ytcp-icon-button#upload-icon", "ytcp-button#upload-button",
+                    "button[aria-label='Upload videos']",
+                    "ytcp-button#create-icon", "#create-icon",
+                    "button[aria-label='Create']"):
+            loc = page.locator(sel)
+            try:
+                if await loc.count() > 0 and await loc.first.is_visible():
+                    await loc.first.click(timeout=4000)
+                    clicked = True
+                    break
+            except Exception:
+                continue
+        if not clicked:
+            await ui.click_text(page, ["Create"], 8000)
+        await page.wait_for_timeout(1200)
+        await _strip_backdrops(page)
+        # If a menu opened, pick "Upload video". (When the upload-icon was used
+        # the dialog is already opening and this is a harmless no-op.)
+        await ui.click_text(page, ["Upload video", "Upload videos"], 5000)
+        await page.wait_for_timeout(2000)
+        await ui.dismiss_overlays(page)
+        await _strip_backdrops(page)
+        await shot(page, "yt_02_upload_dialog", debug)
+        fi = await ui.first_present(
+            page, ["ytcp-uploads-dialog input[type='file']", "input[type='file']"], 15000)
+        if fi is not None:
+            break
+        log(f"  no file input found (attempt {attempt + 1}); retrying")
+        await page.wait_for_timeout(2000)
     if fi is None:
         log("  no file input found")
         return False
@@ -232,15 +258,25 @@ async def run(args):
         await save(page, args.debug)
 
         # Capture the watch id from the save dialog (for blog embedding).
-        try:
-            import re as _re
-            html = await page.content()
-            m = (_re.search(r"youtu\.be/([\w-]{6,})", html)
-                 or _re.search(r"watch\?v=([\w-]{6,})", html))
-            if m:
-                log(f"VIDEO_ID: {m.group(1)}")
-        except Exception:
-            pass
+        # Only trust the short youtu.be/<id> share link the save dialog renders —
+        # a plain watch?v= match can come from the Content list sitting behind
+        # the dialog and yields a DIFFERENT (older) video's id. Poll for it.
+        import re as _re
+        vid = None
+        for _ in range(12):
+            try:
+                html = await page.content()
+                m = _re.search(r"youtu\.be/([\w-]{6,})", html)
+                if m:
+                    vid = m.group(1)
+                    break
+            except Exception:
+                pass
+            await page.wait_for_timeout(1000)
+        if vid:
+            log(f"VIDEO_ID: {vid}")
+        else:
+            log("VIDEO_ID: not found in save dialog (check channel RSS)")
 
         active = channel_id_from_url(page.url)
         if active:
