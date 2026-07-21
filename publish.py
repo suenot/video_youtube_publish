@@ -261,12 +261,14 @@ async def run(args):
         # Only trust the short youtu.be/<id> share link the save dialog renders —
         # a plain watch?v= match can come from the Content list sitting behind
         # the dialog and yields a DIFFERENT (older) video's id. Poll for it.
+        # A Short's share link is youtube.com/shorts/<id> rather than youtu.be/<id>.
         import re as _re
         vid = None
         for _ in range(12):
             try:
                 html = await page.content()
-                m = _re.search(r"youtu\.be/([\w-]{6,})", html)
+                m = (_re.search(r"youtu\.be/([\w-]{6,})", html)
+                     or _re.search(r"youtube\.com/shorts/([\w-]{6,})", html))
                 if m:
                     vid = m.group(1)
                     break
