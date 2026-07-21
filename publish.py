@@ -43,17 +43,25 @@ async def open_upload(page, video, debug):
         await ui.dismiss_overlays(page)
         await _strip_backdrops(page)
 
+        # Locator.click() times out on these controls even though they are
+        # visible and unobstructed — Studio's polymer layer keeps failing the
+        # actionability check. A real mouse click at the element's centre works,
+        # so drive the mouse directly.
         clicked = False
-        for sel in ("ytcp-icon-button#upload-icon", "ytcp-button#upload-button",
+        for sel in ("ytcp-icon-button#upload-icon",
                     "button[aria-label='Upload videos']",
-                    "ytcp-button#create-icon", "#create-icon",
                     "button[aria-label='Create']"):
             loc = page.locator(sel)
             try:
-                if await loc.count() > 0 and await loc.first.is_visible():
-                    await loc.first.click(timeout=4000)
-                    clicked = True
-                    break
+                if await loc.count() == 0 or not await loc.first.is_visible():
+                    continue
+                box = await loc.first.bounding_box()
+                if not box:
+                    continue
+                await page.mouse.click(box["x"] + box["width"] / 2,
+                                       box["y"] + box["height"] / 2)
+                clicked = True
+                break
             except Exception:
                 continue
         if not clicked:
