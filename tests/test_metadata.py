@@ -33,3 +33,12 @@ def test_angle_brackets_are_replaced_with_fullwidth():
     assert strip_angle_brackets("PBO > 0.05") == "PBO ＞ 0.05"
     assert strip_angle_brackets("a <b> c") == "a ＜b＞ c"
     assert strip_angle_brackets("no brackets") == "no brackets"
+
+
+def test_norm_ignores_punctuation_and_case():
+    """The duplicate check compares titles by letters and digits only, so
+    Studio's rendering of quotes and spacing cannot hide an existing upload."""
+    from publish import _norm
+    assert _norm("Fixed Script or Free Agent? Pick Wrong #Shorts") == \
+        _norm("fixed script  or free-agent pick wrong  shorts")
+    assert _norm("") == ""

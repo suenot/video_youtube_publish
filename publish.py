@@ -28,6 +28,64 @@ async def _goto(page, url, tries=3):
         raise last
 
 
+# Studio renders its content rows inside shadow roots, so document-level
+# queries see nothing; walk the roots and collect each row's link and text.
+CONTENT_ROWS_JS = r"""
+() => {
+  const out = []; const seen = new Set();
+  function walk(root) {
+    let els; try { els = root.querySelectorAll('*') } catch (e) { return }
+    for (const el of els) {
+      if (seen.has(el)) continue; seen.add(el);
+      const href = el.getAttribute && el.getAttribute('href');
+      if (href) {
+        const m = href.match(/\/video\/([\w-]{11})\//);
+        if (m) {
+          const row = el.closest ? el.closest('ytcp-video-row') : null;
+          out.push({id: m[1], text: ((row || el).innerText || '')});
+        }
+      }
+      if (el.shadowRoot) walk(el.shadowRoot);
+    }
+  }
+  walk(document);
+  return out;
+}
+"""
+
+
+def _norm(s):
+    """PURE: reduce text to comparable letters and digits."""
+    return "".join(c for c in s.lower() if c.isalnum())
+
+
+async def find_by_title(page, channel_id, title):
+    """Return the id of a video already on the channel with this title, or "".
+
+    A publish run can report failure after the video is already live — the
+    wizard's later steps are what fail, not the upload — so a blind retry
+    publishes a duplicate. Studio's own content list is the authority here: it
+    shows drafts and brand-new uploads immediately, which the public channel
+    page does not.
+    """
+    needle = _norm(title)
+    if not needle:
+        return ""
+    for tab in ("short", "upload"):
+        try:
+            await page.goto(f"{STUDIO}/channel/{channel_id}/videos/{tab}",
+                            wait_until="domcontentloaded", timeout=60_000)
+            await page.wait_for_timeout(9000)
+            rows = await page.evaluate(CONTENT_ROWS_JS)
+        except Exception as e:
+            log(f"  (duplicate check on /{tab} failed: {e})")
+            continue
+        for row in rows:
+            if needle in _norm(row["text"]):
+                return row["id"]
+    return ""
+
+
 OPEN_UPLOAD_LIMIT_S = 300
 
 
@@ -398,8 +456,16 @@ async def run(args):
         if not await clear_verify_gate(page, args, reload_after=True):
             return 7
 
+        cid = None
         if args.channel_id or args.channel_handle:
-            await select_channel(page, args.channel_id, args.channel_handle)
+            cid = await select_channel(page, args.channel_id, args.channel_handle)
+
+        if cid and not args.allow_duplicate:
+            dup = await find_by_title(page, cid, meta["title"])
+            if dup:
+                log(f"ALREADY ON THE CHANNEL as {dup} — refusing to upload a "
+                    f"second copy (pass --allow-duplicate to override)")
+                return 10
 
         verified = False  # conservative default; long videos need --allow-long
         dur = video_duration(str(video))
@@ -483,6 +549,8 @@ def parse_args(argv=None):
                    choices=["private", "unlisted", "public"])
     p.add_argument("--made-for-kids", action="store_true")
     p.add_argument("--allow-long", action="store_true")
+    p.add_argument("--allow-duplicate", action="store_true",
+                   help="upload even if the channel already has this title")
     p.add_argument("--verify-wait", type=int, default=600)
     p.add_argument("--headless", action="store_true")
     p.add_argument("--keep-open", action="store_true")
