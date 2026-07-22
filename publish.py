@@ -1,5 +1,6 @@
 import argparse
 import asyncio
+import re
 import sys
 import time
 from pathlib import Path
@@ -27,7 +28,26 @@ async def _goto(page, url, tries=3):
         raise last
 
 
+OPEN_UPLOAD_LIMIT_S = 300
+
+
 async def open_upload(page, video, debug):
+    """Open the upload dialog and hand it the file, under a hard time limit.
+
+    page.mouse.click() has no timeout of its own, and Studio occasionally stops
+    servicing input events entirely — the run then sits there silently until
+    something outside kills it. Bound the whole step so a stuck dialog costs one
+    upload instead of the queue behind it.
+    """
+    try:
+        return await asyncio.wait_for(_open_upload(page, video, debug),
+                                      timeout=OPEN_UPLOAD_LIMIT_S)
+    except asyncio.TimeoutError:
+        log(f"  ERROR: upload dialog did not come up within {OPEN_UPLOAD_LIMIT_S}s")
+        return False
+
+
+async def _open_upload(page, video, debug):
     # Opening the upload dialog is flaky: the Create menu doesn't always expand,
     # and a transient cdk-overlay-backdrop can eat the click. Deep-linking to
     # .../videos/upload no longer auto-opens the dialog (it just lands on the
@@ -253,7 +273,15 @@ async def set_visibility(page, visibility, debug):
 # shortly"). That dialog carries its own done-button, so a save that worked
 # perfectly still looks like a wizard that never closed.
 SAVED_MARKERS = ("processing will begin", "upload complete", "video processing",
-                 "your video is now", "share your video")
+                 "your video is now", "share your video",
+                 # Save can land while the file is still going up; the same
+                 # dialog then reports progress instead of completion.
+                 "video uploading", "still uploading", "keep this browser tab open")
+# The browser must outlive the file transfer: closing it at 70% throws the
+# upload away, and the save that preceded it counts for nothing.
+UPLOAD_DONE_MARKERS = ("processing will begin", "upload complete",
+                       "video processing", "checks complete", "your video is now")
+UPLOAD_WAIT_S = 900
 
 
 async def _save_landed(page, done_locator):
@@ -285,11 +313,40 @@ async def save(page, debug):
             break
     await page.wait_for_timeout(1000)
     await shot(page, "yt_08_saved", debug)
-    if clicked:
-        log("  clicked Save")
-    else:
+    if not clicked:
         log("  ERROR: Save did not take effect (details dialog still open)")
-    return clicked
+        return False
+    log("  clicked Save")
+    await wait_for_upload(page, debug)
+    return True
+
+
+async def wait_for_upload(page, debug):
+    """Hold the browser open until YouTube has the whole file.
+
+    Saving only commits the metadata — the transfer can still be at 70%, and
+    quitting then discards the video. Poll the dialog until it stops reporting
+    progress.
+    """
+    deadline = time.time() + UPLOAD_WAIT_S
+    last = ""
+    while time.time() < deadline:
+        text = await ui.all_text(page)
+        if any(m in text for m in UPLOAD_DONE_MARKERS):
+            log("  upload complete")
+            return True
+        m = re.search(r"uploading (\d+)%", text)
+        if m and m.group(1) != last:
+            last = m.group(1)
+            log(f"  uploading {last}%")
+        if "uploading" not in text:
+            # No dialog left to report on: nothing more to wait for.
+            log("  upload dialog gone; assuming the transfer finished")
+            return True
+        await page.wait_for_timeout(5000)
+    log(f"  WARNING: still uploading after {UPLOAD_WAIT_S}s; closing anyway")
+    await shot(page, "yt_09_upload_timeout", debug)
+    return False
 
 
 async def clear_verify_gate(page, args, reload_after=False):
