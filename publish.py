@@ -145,16 +145,37 @@ async def fill_details(page, meta, thumbnail, made_for_kids, debug):
             await ti.click(timeout=3000)
             await page.keyboard.type(", ".join(meta["tags"]) + ",", delay=2)
             log("  tags set")
+    ok = await set_audience(page, made_for_kids)
+    await shot(page, "yt_05_details", debug)
+    return ok
+
+
+async def set_audience(page, made_for_kids):
+    """Answer the required "made for kids" question.
+
+    Leaving it unanswered is what silently blocks Next: the wizard sits on the
+    details step forever and the upload ends its life as a draft. Studio renders
+    the radio twice (once in a collapsed section), and the first copy is not
+    always the live one, so try every match and trust only aria-checked.
+    """
     name = ("VIDEO_MADE_FOR_KIDS_MFK" if made_for_kids
             else "VIDEO_MADE_FOR_KIDS_NOT_MFK")
     r = page.locator(f"tp-yt-paper-radio-button[name='{name}']")
-    try:
-        if await r.count() > 0:
-            await r.first.click(timeout=4000)
-            log("  audience set")
-    except Exception:
-        pass
-    await shot(page, "yt_05_details", debug)
+    for attempt in range(3):
+        n = await r.count()
+        for i in range(n):
+            el = r.nth(i)
+            if (await el.get_attribute("aria-checked")) == "true":
+                log("  audience set")
+                return True
+            await _try_click(page, el)
+            await page.wait_for_timeout(500)
+            if (await el.get_attribute("aria-checked")) == "true":
+                log("  audience set")
+                return True
+        await page.wait_for_timeout(1000)
+    log("  ERROR: 'made for kids' left unanswered; the wizard will not advance")
+    return False
 
 
 VISIBILITY_RADIO = "tp-yt-paper-radio-button[name='{}']"
@@ -176,19 +197,27 @@ async def click_next(page, times, debug):
     advanced still reported success and left the upload sitting as a private
     draft with the filename as its title. Now the caller is told.
     """
-    for _ in range(times + 2):
+    for _ in range(times + 5):
         if await page.locator(VISIBILITY_RADIO.format("PUBLIC")).count() > 0:
             return True
-        nx = page.locator("ytcp-button#next-button, #next-button")
-        try:
-            if await nx.count() == 0 or not await nx.first.is_visible():
-                await page.wait_for_timeout(1000)
-                continue
-        except Exception:
+        # Studio autosaves the details as they are typed and disables Next while
+        # the "Saving..." chip is up; clicking through it does nothing.
+        for _ in range(10):
+            if "saving" not in (await ui.all_text(page)).lower():
+                break
             await page.wait_for_timeout(1000)
-            continue
-        await _try_click(page, nx.first)
-        await page.wait_for_timeout(1500)
+        nx = page.locator("ytcp-button#next-button, #next-button")
+        clicked = False
+        try:
+            if await nx.count() > 0 and await nx.first.is_visible():
+                clicked = await _try_click(page, nx.first)
+        except Exception:
+            clicked = False
+        if not clicked:
+            # The draft wizard reached via "Edit draft" renders a plain Next
+            # button without the #next-button id the upload dialog uses.
+            clicked = await ui.click_text(page, ["Next"], 4000)
+        await page.wait_for_timeout(1800)
     reached = await page.locator(VISIBILITY_RADIO.format("PUBLIC")).count() > 0
     if not reached:
         log("  ERROR: never reached the visibility step")
@@ -316,7 +345,11 @@ async def run(args):
         # not silently blocked by the modal. No reload (would drop the dialog).
         if not await clear_verify_gate(page, args):
             return 7
-        await fill_details(page, meta, args.thumbnail, args.made_for_kids, args.debug)
+        if not await fill_details(page, meta, args.thumbnail,
+                                  args.made_for_kids, args.debug):
+            log("PUBLISH FAILED: audience question unanswered; the upload is "
+                "left as a draft")
+            return 9
         if not await click_next(page, 3, args.debug):
             log("PUBLISH FAILED: wizard never reached the visibility step; "
                 "the upload is left as a draft")
