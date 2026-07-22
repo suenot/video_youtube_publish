@@ -25,3 +25,11 @@ def test_cli_overrides_and_title_truncation(tmp_path):
     m = load_metadata(str(p), long, "", "a, b ,")
     assert len(m["title"]) == 100
     assert m["tags"] == ["a", "b"]
+
+
+def test_angle_brackets_are_replaced_with_fullwidth():
+    from metadata import strip_angle_brackets
+
+    assert strip_angle_brackets("PBO > 0.05") == "PBO ＞ 0.05"
+    assert strip_angle_brackets("a <b> c") == "a ＜b＞ c"
+    assert strip_angle_brackets("no brackets") == "no brackets"
