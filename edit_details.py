@@ -7,6 +7,7 @@ video public under its mp4 filename with an empty description. Re-uploading woul
 duplicate a video that is already live, so edit the existing one.
 
     python edit_details.py @marketmaker-zh VIDEO_ID --metadata meta.json
+    python edit_details.py @marketmaker-cc --ids-file ids.txt --language English
 
 Only works on published videos: a draft disables the whole edit page with
 "Feature unavailable while video is in a draft state" — use finish_draft.py first.
@@ -17,7 +18,7 @@ import re
 import sys
 
 from camoufox_session import make_camoufox, prepare_page, log
-from channel import select_channel
+from channel import resolve_channel_id, select_channel
 from metadata import load_metadata
 import youtube_ui as ui
 
@@ -273,22 +274,53 @@ async def edit_one(page, vid: str, meta, language: str = "") -> bool:
 
 async def main(args) -> int:
     meta = load_metadata(args.metadata, args.title, args.description, args.tags)
-    if not (meta["title"] or meta["description"] or meta["tags"] or args.language):
+    has_meta = bool(meta["title"] or meta["description"] or meta["tags"])
+    if not (has_meta or args.language):
         log("nothing to change: pass --metadata/--title/--description/--tags "
             "or --language")
         return 2
+
+    ids = list(args.video_ids)
+    if args.ids_file:
+        with open(args.ids_file, encoding="utf-8") as f:
+            ids += [ln.strip() for ln in f if ln.strip() and not ln.startswith("#")]
+    if not ids:
+        log("no video ids given")
+        return 2
+    # Title/description/tags describe one specific video; only the language is
+    # safe to apply across a batch.
+    if has_meta and len(ids) > 1:
+        log("metadata edits take exactly one video id")
+        return 2
+
+    failed = []
     async with make_camoufox(args.headless) as ctx:
         page = await prepare_page(ctx)
-        await select_channel(page, handle=args.channel_handle)
-        ok = await edit_one(page, args.video_id, meta, args.language)
-    log(f"RESULT: {'ok' if ok else 'FAILED'} {args.video_id}")
-    return 0 if ok else 1
+        active = await select_channel(page, handle=args.channel_handle)
+        wanted = await resolve_channel_id(page, args.channel_handle)
+        # Switching is flaky on this account: the Accounts panel often refuses to
+        # open, and Studio then answers every other channel's video with "Oops,
+        # something went wrong". Editing on the wrong channel accomplishes
+        # nothing, so stop rather than grind through the whole list.
+        if wanted and active != wanted:
+            log(f"ABORT: on channel {active}, wanted {wanted} "
+                f"({args.channel_handle}) — retry the switch later")
+            return 3
+        for vid in ids:
+            if not await edit_one(page, vid, meta, args.language):
+                failed.append(vid)
+    log(f"RESULT: {len(ids) - len(failed)}/{len(ids)} ok on {args.channel_handle}")
+    for vid in failed:
+        log(f"  FAILED {vid}")
+    return 0 if not failed else 1
 
 
 def parse_args(argv=None):
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("channel_handle")
-    p.add_argument("video_id")
+    p.add_argument("video_ids", nargs="*")
+    p.add_argument("--ids-file", default="",
+                   help="file of video ids, one per line (language edits only)")
     p.add_argument("--metadata", default="")
     p.add_argument("--title", default="")
     p.add_argument("--description", default="")

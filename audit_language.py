@@ -19,7 +19,7 @@ import re
 import sys
 
 from camoufox_session import make_camoufox, prepare_page, log
-from channel import select_channel
+from channel import resolve_channel_id, select_channel
 
 STUDIO_VIDEO = "https://studio.youtube.com/video/{vid}/edit"
 # The key is camelCase in the page source; the probe that found it had already
@@ -29,12 +29,20 @@ LANG_RE = re.compile(r'"audioLanguage":\s*\{\s*"languageCode":\s*"([\w-]+)"',
 
 
 async def read_language(page, vid: str) -> str:
-    """Return the stored language code for `vid`, or "" when unset/unreadable."""
+    """Return the stored language code for `vid`.
+
+    "" means the language is unset; "NOLOAD" means the edit page never rendered
+    — normally because the video belongs to a different channel, which must not
+    be reported as an unset language.
+    """
     await page.goto(STUDIO_VIDEO.format(vid=vid), wait_until="domcontentloaded",
                     timeout=60_000)
     await page.wait_for_timeout(6000)
-    m = LANG_RE.search(await page.content())
-    return m.group(1) if m else ""
+    html = await page.content()
+    m = LANG_RE.search(html)
+    if m:
+        return m.group(1)
+    return "" if "title-textarea" in html else "NOLOAD"
 
 
 async def main(args) -> int:
