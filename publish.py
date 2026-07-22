@@ -157,40 +157,96 @@ async def fill_details(page, meta, thumbnail, made_for_kids, debug):
     await shot(page, "yt_05_details", debug)
 
 
+VISIBILITY_RADIO = "tp-yt-paper-radio-button[name='{}']"
+
+
+async def _try_click(page, loc):
+    """Locator.click() first, mouse click as the fallback."""
+    try:
+        await loc.click(timeout=4000)
+        return True
+    except Exception:
+        return await ui.mouse_click(page, loc)
+
+
 async def click_next(page, times, debug):
-    for i in range(times):
+    """Advance the details wizard until the visibility step is on screen.
+
+    Every step of this used to swallow its failures, so a wizard that never
+    advanced still reported success and left the upload sitting as a private
+    draft with the filename as its title. Now the caller is told.
+    """
+    for _ in range(times + 2):
+        if await page.locator(VISIBILITY_RADIO.format("PUBLIC")).count() > 0:
+            return True
         nx = page.locator("ytcp-button#next-button, #next-button")
         try:
-            if await nx.count() > 0 and await nx.first.is_visible():
-                await nx.first.click(timeout=5000)
-                await page.wait_for_timeout(1500)
+            if await nx.count() == 0 or not await nx.first.is_visible():
+                await page.wait_for_timeout(1000)
+                continue
         except Exception:
-            pass
+            await page.wait_for_timeout(1000)
+            continue
+        await _try_click(page, nx.first)
+        await page.wait_for_timeout(1500)
+    reached = await page.locator(VISIBILITY_RADIO.format("PUBLIC")).count() > 0
+    if not reached:
+        log("  ERROR: never reached the visibility step")
+    return reached
 
 
 async def set_visibility(page, visibility, debug):
     name = {"private": "PRIVATE", "unlisted": "UNLISTED",
             "public": "PUBLIC"}.get(visibility, "PRIVATE")
-    r = page.locator(f"tp-yt-paper-radio-button[name='{name}']")
-    try:
-        if await r.count() > 0:
-            await r.first.click(timeout=5000)
-            log(f"  visibility: {visibility}")
-    except Exception:
-        pass
+    r = page.locator(VISIBILITY_RADIO.format(name))
+    ok = False
+    for attempt in range(3):
+        if await r.count() == 0:
+            await page.wait_for_timeout(1000)
+            continue
+        await _try_click(page, r.first)
+        await page.wait_for_timeout(600)
+        # aria-checked is the only trustworthy signal: the click can land on the
+        # row without selecting the radio underneath it.
+        if (await r.first.get_attribute("aria-checked")) == "true":
+            ok = True
+            break
     await shot(page, "yt_07_visibility", debug)
+    if ok:
+        log(f"  visibility: {visibility}")
+    else:
+        log(f"  ERROR: could not select visibility '{visibility}'")
+    return ok
 
 
 async def save(page, debug):
     d = page.locator("ytcp-button#done-button, #done-button")
-    try:
-        if await d.count() > 0 and await d.first.is_visible():
-            await d.first.click(timeout=6000)
-            log("  clicked Save")
-    except Exception:
-        pass
-    await page.wait_for_timeout(4000)
+    clicked = False
+    for attempt in range(3):
+        try:
+            if await d.count() == 0 or not await d.first.is_visible():
+                await page.wait_for_timeout(1000)
+                continue
+        except Exception:
+            await page.wait_for_timeout(1000)
+            continue
+        await _try_click(page, d.first)
+        await page.wait_for_timeout(3000)
+        # Save is confirmed by the dialog going away, not by the click itself.
+        try:
+            if await d.count() == 0 or not await d.first.is_visible():
+                clicked = True
+                break
+        except Exception:
+            clicked = True
+            break
+    await page.wait_for_timeout(1000)
     await shot(page, "yt_08_saved", debug)
+    if clicked:
+        log("  clicked Save")
+    else:
+        log("  ERROR: Save did not take effect (details dialog still open)")
+    return clicked
 
 
 async def clear_verify_gate(page, args, reload_after=False):
@@ -261,9 +317,16 @@ async def run(args):
         if not await clear_verify_gate(page, args):
             return 7
         await fill_details(page, meta, args.thumbnail, args.made_for_kids, args.debug)
-        await click_next(page, 3, args.debug)
-        await set_visibility(page, args.visibility, args.debug)
-        await save(page, args.debug)
+        if not await click_next(page, 3, args.debug):
+            log("PUBLISH FAILED: wizard never reached the visibility step; "
+                "the upload is left as a draft")
+            return 9
+        if not await set_visibility(page, args.visibility, args.debug):
+            log("PUBLISH FAILED: visibility not applied; refusing to report success")
+            return 9
+        if not await save(page, args.debug):
+            log("PUBLISH FAILED: Save did not take effect; the upload is left as a draft")
+            return 9
 
         # Capture the watch id from the save dialog (for blog embedding).
         # Only trust the short youtu.be/<id> share link the save dialog renders —

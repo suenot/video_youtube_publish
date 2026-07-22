@@ -109,6 +109,25 @@ async def first_present(page, selectors, timeout_ms=15000):
     return None
 
 
+async def mouse_click(page, loc):
+    """Click via the mouse at the element's centre.
+
+    Locator.click() reports the polymer controls in Studio as unactionable and
+    times out even when they are visible and unobstructed; a real mouse event at
+    the same coordinates goes through. Returns False when the element has no box
+    (detached or display:none), so callers can tell "not there" from "clicked".
+    """
+    try:
+        box = await loc.bounding_box()
+    except Exception:
+        return False
+    if not box:
+        return False
+    await page.mouse.click(box["x"] + box["width"] / 2,
+                           box["y"] + box["height"] / 2)
+    return True
+
+
 async def dismiss_overlays(page):
     for txt in ("Got it", "Dismiss", "No thanks", "Skip", "Not now",
                 "Continue", "I agree", "Accept all"):
